@@ -5,6 +5,9 @@ from picamera2 import Picamera2
 import time
 import pickle
 from gpiozero import LED, MotionSensor
+import sqlite3
+from datetime import datetime
+import os
 
 # Initialize motion sensor
 green_led = LED(17)
@@ -33,6 +36,57 @@ fps = 0
 
 prev_detected_names = set()
 
+# Dictionary to track last insertion time per person
+last_insert_times = {}
+
+def image_to_blob(image):
+    """Convert image (numpy array) to binary format (BLOB)"""
+    _, buffer = cv2.imencode('.jpg', image)
+    return buffer.tobytes()
+
+def save_to_database(name, frame):
+    global last_insert_times
+    
+    current_time = datetime.now()
+    
+    #check if this person has bee logged in the last five minutes
+    if name in last_insert_times and (current_time - last_insert_times[name]).total_seconds() < 300:
+        print(f"Skipping insertion for {name}. Less than 5 minutes since last save. ")
+        return
+    
+    #update the last insert time for this person
+    last_insert_times[name] = current_time
+    
+    #connect to the sqlite database (faces.db)
+    conn = sqlite3.connect("faces_log.db")
+    cursor = conn.cursor()
+    
+    #generate a timestamp for database entry
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    #define folder where images will be saved
+    folder = "logs"
+    
+    #checks if folder exists if not it will create it
+    if not os.path.exists(folder):
+        os.makedirs(folder)
+        
+    # Convert the image to BLOB format
+    image_blob = image_to_blob(frame)
+    
+    
+    # Insert a record into the "face_logs" table with name, timestamp, and image path
+    cursor.execute("INSERT INTO face_logs (name, timestamp, image) VALUES (?, ?, ?)", 
+                   (name, timestamp, image_blob))
+    
+    # Commit the transaction to save changes in the database
+    conn.commit()
+    
+    # Close the database connection
+    conn.close()
+    
+    print(f"Saved {name} to database at {timestamp}")
+
 def process_frame(frame):
     global face_locations, face_encodings, face_names, prev_detected_names
     resized_frame = cv2.resize(frame, (0, 0), fx=(1/cv_scaler), fy=(1/cv_scaler))
@@ -51,6 +105,9 @@ def process_frame(frame):
             name = known_face_names[best_match_index]
             
         face_names.append(name)
+        
+        #save recognised/unrecognised face to database
+        save_to_database(name, frame)
         
     detected_set = set(face_names)
         
